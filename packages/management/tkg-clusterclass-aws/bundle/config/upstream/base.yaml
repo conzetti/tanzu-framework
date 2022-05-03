@@ -24,21 +24,21 @@ spec:
     machineDeployments:
     - class: tkg-worker
       template:
-         bootstrap:
-           ref:
-             apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-             kind: KubeadmConfigTemplate
-             name: tkg-aws-bootstrap-template
-         infrastructure:
-           ref:
-             apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-             kind: AWSMachineTemplate
-             name: tkg-aws-worker-template
+        bootstrap:
+          ref:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+            kind: KubeadmConfigTemplate
+            name: tkg-aws-bootstrap-template
+        infrastructure:
+          ref:
+            apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+            kind: AWSMachineTemplate
+            name: tkg-aws-worker-template
   infrastructure:
-     ref:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-        kind: AWSClusterTemplate
-        name: aws-cluster-template
+    ref:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+      kind: AWSClusterTemplate
+      name: aws-cluster-template
   variables:
   - name: AWS_REGION
     required: true
@@ -274,9 +274,9 @@ spec:
             items:
               type: string
         required:
-          - httpProxy
-          - httpsProxy
-          - noProxy
+        - httpProxy
+        - httpsProxy
+        - noProxy
   - name: TKG_PROXY_CA_CERT
     required: true
     schema:
@@ -284,13 +284,6 @@ spec:
         type: string
         default: ""
   - name: TKG_CUSTOM_IMAGE_REPOSITORY
-    required: true
-    schema:
-      openAPIV3Schema:
-        type: string
-        default: ""
-  #! TODO this is subset of above, try to remove this
-  - name: TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME
     required: true
     schema:
       openAPIV3Schema:
@@ -314,6 +307,11 @@ spec:
       openAPIV3Schema:
         type: boolean
         default: false
+  - name: TKR_DATA
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties: {}
   patches:
   - name: AWSCT_main
     definitions:
@@ -344,7 +342,7 @@ spec:
         valueFrom:
           template: |
             - availabilityZone: {{if .AWS_NODE_AZ}} {{.AWS_NODE_AZ}} {{else if .AWS_REGION}} {{.AWS_REGION}}a{{end}}
-              cidrBlock: {{.AWS_PRIVATE_NODE_CIDR}}
+              cidrBlock: '{{.AWS_PRIVATE_NODE_CIDR}}'
               id: '{{.AWS_PRIVATE_SUBNET_ID}}'
 
   - name: AWSCT_VPC_Id
@@ -406,7 +404,7 @@ spec:
         valueFrom:
           template: |
             availabilityZone: {{if .AWS_NODE_AZ}} {{.AWS_NODE_AZ}} {{else if .AWS_REGION}} {{.AWS_REGION}}a{{end}}
-            cidrBlock: {{.AWS_PUBLIC_NODE_CIDR}}
+            cidrBlock: '{{.AWS_PUBLIC_NODE_CIDR}}'
             isPublic: true
             id: '{{.AWS_PUBLIC_SUBNET_ID}}'
   - name: AWSCT_AvailabilityZone_1_Public
@@ -485,6 +483,34 @@ spec:
               {{if .AWS_SECURITY_GROUP_NODE }}  node: {{.AWS_SECURITY_GROUP_NODE}} {{end}}
               {{if .AWS_SECURITY_GROUP_LB }}  lb: {{.AWS_SECURITY_GROUP_LB}} {{end}}
 
+  - name: AWS_KCPT
+    definitions:
+    - selector:
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+        kind: KubeadmControlPlaneTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: replace
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/imageRepository
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.controlPlane.version).kubernetesSpec.imageRepository}}'
+      - op: replace
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/etcd/local/imageRepository
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.controlPlane.version).kubernetesSpec.imageRepository}}'
+      - op: replace
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/etcd/local/imageTag
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.controlPlane.version).kubernetesSpec.etcd.imageTag}}'
+      - op: replace
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/dns/imageRepository
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.controlPlane.version).kubernetesSpec.imageRepository}}'
+      - op: replace
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/dns/imageTag
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.controlPlane.version).kubernetesSpec.coredns.imageTag}}'
   - name: AWS_MT_controlplane
     definitions:
     - selector:
@@ -505,6 +531,10 @@ spec:
         path: "/spec/template/spec/rootVolume/size"
         valueFrom:
           variable: AWS_CONTROL_PLANE_OS_DISK_SIZE_GIB
+      - op: replace
+        path: /spec/template/spec/ami/id
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.controlPlane.version).osImageRef.id}}'
 
   - name: AWS_MT_worker
     definitions:
@@ -528,6 +558,53 @@ spec:
         path: "/spec/template/spec/rootVolume/size"
         valueFrom:
           variable: AWS_NODE_OS_DISK_SIZE_GIB
+      - op: replace
+        path: /spec/template/spec/ami/id
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.machineDeployment.version).osImageRef.id}}'
+
+  - name: nodeLabels
+    definitions:
+    - selector:
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+        kind: KubeadmControlPlaneTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/kubeadmConfigSpec/joinConfiguration/nodeRegistration/kubeletExtraArgs
+        valueFrom:
+          template: |
+            node-labels: {{$first := true}}
+              {{- range $key, $val := (index .TKR_DATA .builtin.controlPlane.version).labels}}
+              {{- if $first }}
+                {{- $first = false }}
+              {{- else -}}
+                ,
+              {{- end }}
+              {{- $key }}={{- $val }}
+              {{- end}}
+    - selector:
+        apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+        kind: KubeadmConfigTemplate
+        matchResources:
+          machineDeploymentClass:
+            names:
+            - "tkg-worker"
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/joinConfiguration/nodeRegistration/kubeletExtraArgs
+        valueFrom:
+          template: |
+            node-labels: {{$first := true}}
+              {{- range $key, $val := (index .TKR_DATA .builtin.machineDeployment.version).labels}}
+              {{- if $first }}
+                {{- $first = false }}
+              {{- else -}}
+                ,
+              {{- end }}
+              {{- $key }}={{- $val }}
+              {{- end}}
   - name: httpProxy
     enabledIf: '{{not (not .proxy)}}'
     definitions:
@@ -651,12 +728,12 @@ spec:
         path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
         valueFrom:
           template: |
-            "echo '[plugins.\"io.containerd.grpc.v1.cri\".registry.configs.\"{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}\".tls]' >> /etc/containerd/config.toml"
+            echo '[plugins."io.containerd.grpc.v1.cri".registry.configs."{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}".tls]' >> /etc/containerd/config.toml
       - op: add
         path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
         valueFrom:
           template: |
-            "echo '  ca_file = \"/etc/containerd/{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}.crt\"' >> /etc/containerd/config.toml"
+            echo '  ca_file = "/etc/containerd/{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}.crt"' >> /etc/containerd/config.toml
       - op: add
         path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
         value: systemctl restart containerd
@@ -664,10 +741,10 @@ spec:
         path: /spec/template/spec/kubeadmConfigSpec/files/-
         valueFrom:
           template: |
-            path: "/etc/containerd/{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}.crt"
+            path: /etc/containerd/{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}.crt
             content: {{or .TKG_PROXY_CA_CERT .TKG_CUSTOM_IMAGE_REPOSITORY_CA_CERTIFICATE}}
-            encoding: "base64"
-            permissions: "0444"
+            encoding: base64
+            permissions: 0444
     - selector:
         apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
         kind: KubeadmConfigTemplate
@@ -680,12 +757,12 @@ spec:
         path: /spec/template/spec/preKubeadmCommands/-
         valueFrom:
           template: |
-            "echo '[plugins.\"io.containerd.grpc.v1.cri\".registry.configs.\"{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}\".tls]' >> /etc/containerd/config.toml"
+            echo '[plugins."io.containerd.grpc.v1.cri".registry.configs."{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}".tls]' >> /etc/containerd/config.toml
       - op: add
         path: /spec/template/spec/preKubeadmCommands/-
         valueFrom:
           template: |
-            "echo '  ca_file = \"/etc/containerd/{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}.crt\"' >> /etc/containerd/config.toml"
+            echo '  ca_file = "/etc/containerd/{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}.crt"' >> /etc/containerd/config.toml
       - op: add
         path: /spec/template/spec/preKubeadmCommands/-
         value: systemctl restart containerd
@@ -693,10 +770,10 @@ spec:
         path: /spec/template/spec/files/-
         valueFrom:
           template: |
-            path: "/etc/containerd/{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}.crt"
+            path: /etc/containerd/{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}.crt
             content: {{or .TKG_PROXY_CA_CERT .TKG_CUSTOM_IMAGE_REPOSITORY_CA_CERTIFICATE}}
-            encoding: "base64"
-            permissions: "0444"
+            encoding: base64
+            permissions: 0444
   - name: registrySkipTLSVerify
     enabledIf: '{{and (ne "" .TKG_CUSTOM_IMAGE_REPOSITORY) .TKG_CUSTOM_IMAGE_REPOSITORY_SKIP_TLS_VERIFY}}'
     definitions:
@@ -710,7 +787,7 @@ spec:
         path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
         valueFrom:
           template: |
-            echo '[plugins.\"io.containerd.grpc.v1.cri\".registry.configs.\"{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}\".tls]' >> /etc/containerd/config.toml
+            echo '[plugins."io.containerd.grpc.v1.cri".registry.configs."{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}".tls]' >> /etc/containerd/config.toml
       - op: add
         path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
         value: echo '  insecure_skip_verify = true' >> /etc/containerd/config.toml
@@ -726,7 +803,7 @@ spec:
         path: /spec/template/spec/preKubeadmCommands/-
         valueFrom:
           template: |
-            echo '[plugins.\"io.containerd.grpc.v1.cri\".registry.configs.\"{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}\".tls]' >> /etc/containerd/config.toml
+            echo '[plugins."io.containerd.grpc.v1.cri".registry.configs."{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}".tls]' >> /etc/containerd/config.toml
       - op: add
         path: /spec/template/spec/preKubeadmCommands/-
         value: echo '  insecure_skip_verify = true' >> /etc/containerd/config.toml
@@ -962,9 +1039,9 @@ spec:
         vpc:
           cidrBlock:
         subnets:
-          - availabilityZone: '${AWS_NODE_AZ}'
-            cidrBlock: '${AWS_PRIVATE_NODE_CIDR}'
-            id: '${AWS_PRIVATE_SUBNET_ID}'
+        - availabilityZone: '${AWS_NODE_AZ}'
+          cidrBlock: '${AWS_PRIVATE_NODE_CIDR}'
+          id: '${AWS_PRIVATE_SUBNET_ID}'
 ---
 apiVersion: controlplane.cluster.x-k8s.io/v1beta1
 kind: KubeadmControlPlaneTemplate
@@ -990,16 +1067,16 @@ spec:
               cloud-provider: aws
               tls-cipher-suites: TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
           dns:
-            imageRepository: projects-stg.registry.vmware.com/tkg #! TODO '${_TKG_COREDNS_IMAGE_REPOSITORY}' May be a variable for package level
-            imageTag: v1.8.4_vmware.5 #! TODO '${_TKG_COREDNS_IMAGE_TAG}' May be a variable for package level
+            imageRepository: #! e.g. projects-stg.registry.vmware.com/tkg
+            imageTag: #! e.g. 1.8.4_vmware.5
           etcd:
             local:
               dataDir: /var/lib/etcd
-              imageRepository: projects-stg.registry.vmware.com/tkg #! TODO '${_TKG_ETCD_IMAGE_REPOSITORY}' May be a variable for package level
-              imageTag: v3.5.0_vmware.5 #! TODO '${_TKG_ETCD_IMAGE_TAG}' May be a variable for package level
+              imageRepository: #! e.g. projects-stg.registry.vmware.com/tkg
+              imageTag: #! e.g. v3.5.0_vmware.5
               extraArgs:
                 cipher-suites: TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
-          imageRepository: projects-stg.registry.vmware.com/tkg #! TODO '${_TKG_COREDNS_IMAGE_REPOSITORY}' May be a variable for package level
+          imageRepository: #! e.g. projects-stg.registry.vmware.com/tkg
           scheduler:
             extraArgs:
               tls-cipher-suites: TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384

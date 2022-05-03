@@ -18,21 +18,21 @@ spec:
     machineDeployments:
     - class: tkg-worker
       template:
-         bootstrap:
-           ref:
-             apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
-             kind: KubeadmConfigTemplate
-             name: tkg-bootstrap-template
-         infrastructure:
-           ref:
-             apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-             kind: AzureMachineTemplate
-             name: tkg-azure-template
+        bootstrap:
+          ref:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+            kind: KubeadmConfigTemplate
+            name: tkg-bootstrap-template
+        infrastructure:
+          ref:
+            apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+            kind: AzureMachineTemplate
+            name: tkg-azure-template
   infrastructure:
-     ref:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-        kind: AzureClusterTemplate
-        name: azure-cluster-template
+    ref:
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+      kind: AzureClusterTemplate
+      name: azure-cluster-template
   variables:
   - name: AZURE_LOCATION
     required: true
@@ -232,21 +232,15 @@ spec:
             items:
               type: string
         required:
-          - httpProxy
-          - httpsProxy
-          - noProxy
+        - httpProxy
+        - httpsProxy
+        - noProxy
   - name: TKG_PROXY_CA_CERT
     schema:
       openAPIV3Schema:
         type: string
         default: ""
   - name: TKG_CUSTOM_IMAGE_REPOSITORY
-    schema:
-      openAPIV3Schema:
-        type: string
-        default: ""
-  # TODO this is subset of above, try to remove this
-  - name: TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME
     schema:
       openAPIV3Schema:
         type: string
@@ -266,9 +260,34 @@ spec:
       openAPIV3Schema:
         type: boolean
         default: false
+  - name: AZURE_CUSTOM_TAGS
+    schema:
+      openAPIV3Schema:
+        type: string
+        default: ""
+  - name: TKR_DATA
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties: {}
   patches:
+  - name: AzureClusterCustomTags
+    enabledIf: '{{if .AZURE_CUSTOM_TAGS}}true{{end}}'
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: AzureClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: "/spec/template/spec/additionalTags"
+        valueFrom:
+          template: |
+            {{$azureTags := split "," .AZURE_CUSTOM_TAGS}}{{range $azureTag := $azureTags}}{{$azureTag = trim $azureTag}}{{$azureTagSplit := split "=" $azureTag}}{{$azureTagSplit._0}}: {{$azureTagSplit._1}}
+            {{end}}
   - name: AzureClusterIdentityRef
-    enabledIf: '{{if or .AZURE_IDENTITY_NAME (eq .TKG_CLUSTER_ROLE "management")}}true{{end}}'
+    enabledIf: '{{if or (and .AZURE_IDENTITY_NAME .AZURE_IDENTITY_NAMESPACE) (eq .TKG_CLUSTER_ROLE "management")}}true{{end}}'
     definitions:
     - selector:
         apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
@@ -285,7 +304,7 @@ spec:
             name: {{.builtin.cluster.name}}-identity
             namespace: tkg-system
   - name: AzureClusterIdentityName
-    enabledIf: '{{if or .AZURE_IDENTITY_NAME (eq .TKG_CLUSTER_ROLE "management")}}true{{end}}'
+    enabledIf: '{{if and .AZURE_IDENTITY_NAME .AZURE_IDENTITY_NAMESPACE}}true{{end}}'
     definitions:
     - selector:
         apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
@@ -297,15 +316,6 @@ spec:
         path: "/spec/template/spec/identityRef/name"
         valueFrom:
           variable: AZURE_IDENTITY_NAME
-  - name: AzureClusterIdentityNamespace
-    enabledIf: '{{if or .AZURE_IDENTITY_NAME (eq .TKG_CLUSTER_ROLE "management")}}true{{end}}'
-    definitions:
-    - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-        kind: AzureClusterTemplate
-        matchResources:
-          infrastructureCluster: true
-      jsonPatches:
       - op: replace
         path: "/spec/template/spec/identityRef/namespace"
         valueFrom:
@@ -389,6 +399,40 @@ spec:
             diskSizeGB: {{.AZURE_CONTROL_PLANE_OS_DISK_SIZE_GIB}}
             managedDisk:
               storageAccountType: {{.AZURE_CONTROL_PLANE_OS_DISK_STORAGE_ACCOUNT_TYPE}}
+      - op: replace
+        path: /spec/template/spec/image/marketplace
+        valueFrom:
+          template: |
+            {{ range $k, $v := (index .TKR_DATA .builtin.controlPlane.version).osImageRef }}{{$k}}: {{$v}}
+            {{end}}
+  - name: KCPT_ControlPlane_Main
+    definitions:
+    - selector:
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+        kind: KubeadmControlPlaneTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: replace
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/imageRepository
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.controlPlane.version).kubernetesSpec.imageRepository}}'
+      - op: replace
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/etcd/local/imageRepository
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.controlPlane.version).kubernetesSpec.imageRepository}}'
+      - op: replace
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/etcd/local/imageTag
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.controlPlane.version).kubernetesSpec.etcd.imageTag}}'
+      - op: replace
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/dns/imageRepository
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.controlPlane.version).kubernetesSpec.imageRepository}}'
+      - op: replace
+        path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/dns/imageTag
+        valueFrom:
+          template: '{{(index .TKR_DATA .builtin.controlPlane.version).kubernetesSpec.coredns.imageTag}}'
   - name: AMT_MachineDeployment_Main
     definitions:
     - selector:
@@ -419,6 +463,12 @@ spec:
             diskSizeGB: {{ .AZURE_NODE_OS_DISK_SIZE_GIB }}
             managedDisk:
               storageAccountType: {{ .AZURE_NODE_OS_DISK_STORAGE_ACCOUNT_TYPE }}
+      - op: replace
+        path: /spec/template/spec/image/marketplace
+        valueFrom:
+          template: |
+            {{ range $k, $v := (index .TKR_DATA .builtin.machineDeployment.version).osImageRef }}{{$k}}: {{$v}}
+            {{end}}
   - name: AMT_EnableNodeDataDisk
     enabledIf: '{{if .AZURE_ENABLE_NODE_DATA_DISK}}true{{end}}'
     definitions:
@@ -446,7 +496,7 @@ spec:
         matchResources:
           machineDeploymentClass:
             names:
-              - tkg-worker
+            - tkg-worker
       jsonPatches:
       - op: add
         path: "/spec/template/spec/diskSetup"
@@ -535,6 +585,48 @@ spec:
           template: |
             frontendIPsCount: {{ .AZURE_NODE_OUTBOUND_LB_FRONTEND_IP_COUNT }}
             idleTimeoutInMinutes: {{ .AZURE_NODE_OUTBOUND_LB_IDLE_TIMEOUT_IN_MINUTES }}
+  - name: nodeLabels
+    definitions:
+    - selector:
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+        kind: KubeadmControlPlaneTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/kubeadmConfigSpec/joinConfiguration/nodeRegistration/kubeletExtraArgs
+        valueFrom:
+          template: |
+            node-labels: {{$first := true}}
+              {{- range $key, $val := (index .TKR_DATA .builtin.controlPlane.version).labels}}
+              {{- if $first }}
+                {{- $first = false }}
+              {{- else -}}
+                ,
+              {{- end }}
+              {{- $key }}={{- $val }}
+              {{- end}}
+    - selector:
+        apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+        kind: KubeadmConfigTemplate
+        matchResources:
+          machineDeploymentClass:
+            names:
+            - "tkg-worker"
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/joinConfiguration/nodeRegistration/kubeletExtraArgs
+        valueFrom:
+          template: |
+            node-labels: {{$first := true}}
+              {{- range $key, $val := (index .TKR_DATA .builtin.machineDeployment.version).labels}}
+              {{- if $first }}
+                {{- $first = false }}
+              {{- else -}}
+                ,
+              {{- end }}
+              {{- $key }}={{- $val }}
+              {{- end}}
   - name: httpProxy
     enabledIf: '{{not (not .proxy)}}'
     definitions:
@@ -646,7 +738,7 @@ spec:
           template: |
             export NO_PROXY={{- range .proxy.noProxy}}{{.}},{{- end}}{{.AZURE_VNET_CIDR}},169.254.0.0/16,168.63.129.16,{{.SERVICE_CIDR}},{{.CLUSTER_CIDR}},localhost,127.0.0.1,.scv,.svc.cluster.local
   - name: registryCACert
-    enabledif: '{{and (ne "" (or .TKG_PROXY_CA_CERT .TKG_CUSTOM_IMAGE_REPOSITORY_CA_CERTIFICATE)) (not (and .TKG_CUSTOM_IMAGE_REPOSITORY_SKIP_TLS_VERIFY (ne "" .TKG_CUSTOM_IMAGE_REPOSITORY))) }}'
+    enabledIf: '{{and (ne "" (or .TKG_PROXY_CA_CERT .TKG_CUSTOM_IMAGE_REPOSITORY_CA_CERTIFICATE)) (not (and .TKG_CUSTOM_IMAGE_REPOSITORY_SKIP_TLS_VERIFY (ne "" .TKG_CUSTOM_IMAGE_REPOSITORY))) }}'
     definitions:
     - selector:
         apiVersion: controlplane.cluster.x-k8s.io/v1beta1
@@ -658,12 +750,12 @@ spec:
         path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
         valueFrom:
           template: |
-            "echo '[plugins.\"io.containerd.grpc.v1.cri\".registry.configs.\"{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}\".tls]' >> /etc/containerd/config.toml"
+            echo '[plugins."io.containerd.grpc.v1.cri".registry.configs."{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}".tls]' >> /etc/containerd/config.toml
       - op: add
         path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
         valueFrom:
           template: |
-            "echo '  ca_file = \"/etc/containerd/{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}.crt\"' >> /etc/containerd/config.toml"
+            echo '  ca_file = \"/etc/containerd/{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}.crt\"' >> /etc/containerd/config.toml
       - op: add
         path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
         value: systemctl restart containerd
@@ -671,7 +763,7 @@ spec:
         path: /spec/template/spec/kubeadmConfigSpec/files/-
         valueFrom:
           template: |
-            path: "/etc/containerd/{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}.crt"
+            path: /etc/containerd/{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}.crt
             content: {{or .TKG_PROXY_CA_CERT .TKG_CUSTOM_IMAGE_REPOSITORY_CA_CERTIFICATE}}
             encoding: "base64"
             permissions: "0444"
@@ -687,12 +779,12 @@ spec:
         path: /spec/template/spec/preKubeadmCommands/-
         valueFrom:
           template: |
-            "echo '[plugins.\"io.containerd.grpc.v1.cri\".registry.configs.\"{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}\".tls]' >> /etc/containerd/config.toml"
+            echo '[plugins."io.containerd.grpc.v1.cri".registry.configs."{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}".tls]' >> /etc/containerd/config.toml"
       - op: add
         path: /spec/template/spec/preKubeadmCommands/-
         valueFrom:
           template: |
-            "echo '  ca_file = \"/etc/containerd/{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}.crt\"' >> /etc/containerd/config.toml"
+            "echo '  ca_file = \"/etc/containerd/{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}.crt\"' >> /etc/containerd/config.toml"
       - op: add
         path: /spec/template/spec/preKubeadmCommands/-
         value: systemctl restart containerd
@@ -700,7 +792,7 @@ spec:
         path: /spec/template/spec/files/-
         valueFrom:
           template: |
-            path: "/etc/containerd/{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}.crt"
+            path: /etc/containerd/{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}.crt
             content: {{or .TKG_PROXY_CA_CERT .TKG_CUSTOM_IMAGE_REPOSITORY_CA_CERTIFICATE}}
             encoding: "base64"
             permissions: "0444"
@@ -717,7 +809,7 @@ spec:
         path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
         valueFrom:
           template: |
-            echo '[plugins.\"io.containerd.grpc.v1.cri\".registry.configs.\"{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}\".tls]' >> /etc/containerd/config.toml
+            echo '[plugins."io.containerd.grpc.v1.cri".registry.configs."{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}".tls]' >> /etc/containerd/config.toml
       - op: add
         path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
         value: echo '  insecure_skip_verify = true' >> /etc/containerd/config.toml
@@ -733,7 +825,7 @@ spec:
         path: /spec/template/spec/preKubeadmCommands/-
         valueFrom:
           template: |
-            echo '[plugins.\"io.containerd.grpc.v1.cri\".registry.configs.\"{{.TKG_CUSTOM_IMAGE_REPOSITORY_HOSTNAME}}\".tls]' >> /etc/containerd/config.toml
+            echo '[plugins."io.containerd.grpc.v1.cri".registry.configs."{{(index (splitList "/" .TKG_CUSTOM_IMAGE_REPOSITORY) 0)}}".tls]' >> /etc/containerd/config.toml
       - op: add
         path: /spec/template/spec/preKubeadmCommands/-
         value: echo '  insecure_skip_verify = true' >> /etc/containerd/config.toml
@@ -969,12 +1061,12 @@ spec:
           resourceGroup: ${AZURE_VNET_RESOURCE_GROUP:=${CLUSTER_NAME}}
           cidrBlock: ${AZURE_VNET_CIDR}
         subnets:
-          - name: ${AZURE_CONTROL_PLANE_SUBNET_NAME}
-            role: control-plane
-            cidrBlock: ${AZURE_CONTROL_PLANE_SUBNET_CIDR}
-          - name: ${AZURE_NODE_SUBNET_NAME}
-            role: node
-            cidrBlock: ${AZURE_NODE_SUBNET_CIDR}
+        - name: ${AZURE_CONTROL_PLANE_SUBNET_NAME}
+          role: control-plane
+          cidrBlock: ${AZURE_CONTROL_PLANE_SUBNET_CIDR}
+        - name: ${AZURE_NODE_SUBNET_NAME}
+          role: node
+          cidrBlock: ${AZURE_NODE_SUBNET_CIDR}
       resourceGroup: ${AZURE_RESOURCE_GROUP:=${CLUSTER_NAME}}
       subscriptionID: ${AZURE_SUBSCRIPTION_ID}
 ---
@@ -993,10 +1085,10 @@ spec:
               cloud-config: /etc/kubernetes/azure.json
               cloud-provider: azure
             extraVolumes:
-              - hostPath: /etc/kubernetes/azure.json
-                mountPath: /etc/kubernetes/azure.json
-                name: cloud-config
-                readOnly: true
+            - hostPath: /etc/kubernetes/azure.json
+              mountPath: /etc/kubernetes/azure.json
+              name: cloud-config
+              readOnly: true
             timeoutForControlPlane: 20m
           controllerManager:
             extraArgs:
@@ -1005,22 +1097,22 @@ spec:
               cloud-provider: azure
               cluster-name: ${CLUSTER_NAME}
             extraVolumes:
-              - hostPath: /etc/kubernetes/azure.json
-                mountPath: /etc/kubernetes/azure.json
-                name: cloud-config
-                readOnly: true
+            - hostPath: /etc/kubernetes/azure.json
+              mountPath: /etc/kubernetes/azure.json
+              name: cloud-config
+              readOnly: true
           dns:
-            imageRepository: registry.tkg.vmware.run
-            imageTag: v1.6.5_vmware.4
+            imageRepository: #! e.g. registry.tkg.vmware.run
+            imageTag: #! e.g. v1.6.5_vmware.4
           etcd:
             local:
               dataDir: /var/lib/etcddisk/etcd
               extraArgs:
                 cipher-suites: TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
                 quota-backend-bytes: "8589934592"
-              imageRepository: registry.tkg.vmware.run
-              imageTag: v3.4.3_vmware.4
-          imageRepository: registry.tkg.vmware.run
+              imageRepository: #! e.g. registry.tkg.vmware.run
+              imageTag: #! e.g v3.4.3_vmware.4
+          imageRepository: #! e.g. registry.tkg.vmware.run
         diskSetup:
           filesystems:
           - device: /dev/disk/azure/scsi1/lun0
@@ -1061,8 +1153,8 @@ spec:
               cloud-provider: azure
             name: '{{ ds.meta_data["local_hostname"] }}'
         mounts:
-          - - LABEL=etcd_disk
-            - /var/lib/etcddisk
+        - - LABEL=etcd_disk
+          - /var/lib/etcddisk
         useExperimentalRetryJoin: true
         postKubeadmCommands: []
         preKubeadmCommands: []
@@ -1088,7 +1180,7 @@ spec:
         lun: 0
         nameSuffix: etcddisk
       image:
-         id: image_id
+        marketplace:
       osDisk:
         diskSizeGB: 128
         managedDisk:
@@ -1139,7 +1231,7 @@ spec:
           storageAccountType: Premium_LRS
         osType: Linux
       image:
-         id: image_id
+        marketplace:
       sshPublicKey: ${AZURE_SSH_PUBLIC_KEY_B64:=""}
       vmSize: ${AZURE_NODE_MACHINE_TYPE}
 
@@ -1153,14 +1245,14 @@ spec:
   template:
     spec:
       files:
-        - contentFrom:
-            secret:
-              key: worker-node-azure.json
-              # VVVV TODO(vui)
-              name: tkg-md-0-azure-json
-          owner: root:root
-          path: /etc/kubernetes/azure.json
-          permissions: "0644"
+      - contentFrom:
+          secret:
+            key: worker-node-azure.json
+            # VVVV TODO(vui)
+            name: tkg-md-0-azure-json
+        owner: root:root
+        path: /etc/kubernetes/azure.json
+        permissions: "0644"
       joinConfiguration:
         nodeRegistration:
           kubeletExtraArgs:
